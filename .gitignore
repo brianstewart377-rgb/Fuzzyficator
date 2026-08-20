@@ -4,3 +4,7 @@ __pycache__/
 *.gcode.bak
 .fuzzyficator-*.tmp
 texture-previews/
+.fuzzyficator-python.txt
+.build-venv/
+build/
+dist/

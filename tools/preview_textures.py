@@ -26,7 +26,7 @@ def png_chunk(chunk_type: bytes, payload: bytes) -> bytes:
     return struct.pack(">I", len(payload)) + chunk_type + payload + struct.pack(">I", checksum & 0xFFFFFFFF)
 
 
-def write_grayscale_png(path: os.PathLike[str] | str, rows: list[bytes]) -> None:
+def grayscale_png_bytes(rows: list[bytes]) -> bytes:
     if not rows or not rows[0]:
         raise ValueError("Preview rows cannot be empty")
     width = len(rows[0])
@@ -35,12 +35,16 @@ def write_grayscale_png(path: os.PathLike[str] | str, rows: list[bytes]) -> None
     height = len(rows)
     raw_scanlines = b"".join(b"\x00" + row for row in rows)
     header = struct.pack(">IIBBBBB", width, height, 8, 0, 0, 0, 0)
-    content = (
+    return (
         PNG_SIGNATURE
         + png_chunk(b"IHDR", header)
         + png_chunk(b"IDAT", zlib.compress(raw_scanlines, level=9))
         + png_chunk(b"IEND", b"")
     )
+
+
+def write_grayscale_png(path: os.PathLike[str] | str, rows: list[bytes]) -> None:
+    content = grayscale_png_bytes(rows)
     with open(path, "wb") as handle:
         handle.write(content)
 

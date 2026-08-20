@@ -3,9 +3,13 @@ import os
 import tempfile
 import unittest
 from types import SimpleNamespace
+from unittest import mock
 
 import Fuzzyficator as fuzzy
+import FuzzyficatorApp as fuzzy_app
+import Fuzzyficator_configurator as configurator_app
 from tools import preview_textures
+from tools.configurator import ConfiguratorSettings, FEATURE_SIZES, preview_choices
 
 
 def make_args(**overrides):
@@ -59,6 +63,85 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(args.noiseType, "ridged")
         self.assertEqual(args.noiseScale, 1.4)
         self.assertEqual(args.resolution, 0.35)
+
+    def test_friendly_command_flags_parse_and_convert_speed(self):
+        args = fuzzy.parse_arguments(
+            [
+                "--run",
+                "1",
+                "--texture",
+                "ridged",
+                "--size",
+                "1.4",
+                "--height",
+                "0.3",
+                "--speed",
+                "25",
+                "input.gcode",
+            ]
+        )
+        config = fuzzy.FuzzySkinConfig(args)
+
+        self.assertEqual(args.noiseType, "ridged")
+        self.assertEqual(args.noiseScale, 1.4)
+        self.assertEqual(args.zMax, 0.3)
+        self.assertEqual(config.fuzzy_speed, 1500.0)
+
+    def test_configurator_command_is_accepted_by_processor_parser(self):
+        settings = ConfiguratorSettings()
+        args = fuzzy.parse_arguments([*settings.processor_arguments(), "input.gcode"])
+        config = fuzzy.FuzzySkinConfig(args)
+
+        self.assertEqual(config.noise_type, settings.texture)
+        self.assertEqual(config.noise_scale, settings.size)
+        self.assertEqual(config.z_max, settings.height)
+        self.assertEqual(config.fuzzy_speed, settings.speed * 60)
+
+    def test_bundled_application_command_needs_no_python_or_script_path(self):
+        settings = ConfiguratorSettings()
+        command = settings.application_command(r"C:\Program Files\Fuzzyficator\Fuzzyficator.exe")
+
+        self.assertTrue(command.startswith(r'"C:\Program Files\Fuzzyficator\Fuzzyficator.exe"'))
+        self.assertIn("--texture ridged", command)
+        self.assertNotIn(".py", command)
+
+    def test_single_app_routes_no_arguments_to_configurator(self):
+        with mock.patch.object(fuzzy_app.Fuzzyficator_configurator, "main", return_value=7) as gui_main:
+            result = fuzzy_app.main([])
+
+        self.assertEqual(result, 7)
+        gui_main.assert_called_once_with()
+
+    def test_single_app_routes_arguments_to_processor(self):
+        with mock.patch.object(fuzzy_app.Fuzzyficator, "main", return_value=8) as processor_main:
+            result = fuzzy_app.main(["--version"])
+
+        self.assertEqual(result, 8)
+        processor_main.assert_called_once_with(["--version"])
+
+    def test_source_configurator_command_uses_running_python_and_processor_path(self):
+        settings = ConfiguratorSettings()
+        command = configurator_app.build_slicer_command(settings)
+
+        self.assertIn("Fuzzyficator.py", command)
+        self.assertIn("--texture ridged", command)
+
+    def test_frozen_configurator_command_uses_only_application_path(self):
+        settings = ConfiguratorSettings()
+        with mock.patch.object(configurator_app.sys, "frozen", True, create=True), mock.patch.object(
+            configurator_app.sys, "executable", r"C:\Apps\Fuzzyficator.exe"
+        ):
+            command = configurator_app.build_slicer_command(settings)
+
+        self.assertTrue(command.startswith(r"C:\Apps\Fuzzyficator.exe"))
+        self.assertNotIn("python", command.lower())
+        self.assertNotIn(".py", command)
+
+    def test_preview_grid_has_one_random_and_four_sizes_for_spatial_textures(self):
+        choices = list(preview_choices())
+
+        self.assertEqual(choices[0], ("random", None))
+        self.assertEqual(len(choices), 1 + 4 * len(FEATURE_SIZES))
 
     def test_slicer_settings_are_inherited_when_cli_values_are_omitted(self):
         config = fuzzy.FuzzySkinConfig(make_args())
@@ -318,6 +401,26 @@ class NoiseTests(unittest.TestCase):
         self.assertTrue(content.startswith(preview_textures.PNG_SIGNATURE))
         self.assertIn(b"IHDR", content)
         self.assertTrue(content.endswith(b"IEND\xaeB`\x82"))
+
+    def test_preview_encoder_matches_file_writer(self):
+        rows = preview_textures.render_texture(
+            "voronoi",
+            size=16,
+            millimetres=10.0,
+            seed=42,
+            scale=2.8,
+            octaves=4,
+            persistence=0.5,
+        )
+        encoded = preview_textures.grayscale_png_bytes(rows)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = os.path.join(temp_dir, "voronoi.png")
+            preview_textures.write_grayscale_png(path, rows)
+            with open(path, "rb") as handle:
+                written = handle.read()
+
+        self.assertEqual(encoded, written)
 
 
 if __name__ == "__main__":
