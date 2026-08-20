@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+*.gcode
+*.gcode.bak
+.fuzzyficator-*.tmp
+texture-previews/

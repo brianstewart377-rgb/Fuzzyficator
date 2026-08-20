@@ -1,181 +1,99 @@
 # Fuzzyficator
-(Work In Progress) A Gcode postprocessing script to add non-planar "Fuzzyskin" to top flat surfaces and overhangs.
 
-(Dear Youtubers if you make a Video about this, I would be glad if you could link to my channel <3 https://www.youtube.com/@tengertechnologies ) 
+Fuzzyficator is a G-code post-processor that adds non-planar texture to flat top surfaces and supported lower surfaces produced by Bambu Studio, OrcaSlicer, and PrusaSlicer.
 
-The Fuzzyficator.py works for Bambustudio, Orcaslicer and Prusaslicer. 
+This fork retains the original single-file workflow and GPL-3.0 licence while correcting the core interpolation and file-safety behaviour. It also adds deterministic spatial texture algorithms for coherent patterns across continuous paths such as Hilbert Curve.
 
-Use it at your on risk.
+> This software rewrites printer G-code. Test new settings on a small calibration piece before using them on a long print.
 
-The Fuzzyficator script automatically reads your fuzzyskin settings and applies them to the top and bottom surfaces. 
-If you want to use the overhang fuzzyskin, enable supports. Otherwise it will end up in a failed overhang.
+## What this fork fixes
 
-You can overite the settings with:
+- Conserves relative extrusion instead of re-extruding the beginning of every source move.
+- Uses `ceil()` segmentation so generated moves never exceed the requested resolution.
+- Compensates extrusion using the actual height change between adjacent generated points.
+- Preserves texture across short connected moves and only reconnects to nominal Z at real path boundaries.
+- Reads fuzzy-skin point distance and thickness from current Bambu Studio, OrcaSlicer, and PrusaSlicer G-code when CLI overrides are omitted.
+- Restores nominal Z and the previous feed rate when leaving a textured feature.
+- Rejects unsupported `M82` absolute extrusion without modifying the input.
+- Replaces files atomically and can create an optional backup.
+- Marks processed files to prevent accidental double processing.
+- Uses deterministic seeds for repeatable results.
 
--resolution (use any number)
+## Texture algorithms
 
--zMin (use any number)
+`-noiseType` accepts:
 
--zMax (use any number)
+- `random` — the original independent random-height character.
+- `perlin` — smooth coherent hills.
+- `billow` — rounded cloud-like islands.
+- `ridged` — connected multifractal ridges.
+- `voronoi` — cellular regions.
 
--connectWalls (use 1 or 0)
+Patterned noise separates two concepts that the original script conflated:
 
--run (use 1 or 0)
+- `-resolution` is the maximum generated G-code segment length.
+- `-noiseScale` is the approximate spatial size of the texture features.
 
--compensateExtrusion (use 1 or 0)
+## Recommended Hilbert + Ridged preset
 
--topSurface (use 1 or 0)
+In the slicer select:
 
--lowerSurface (use 1 or 0)
+**Process → Strength → Top/Bottom Shells → Top Surface Pattern → Hilbert Curve**
 
--fuzzySpeed (use any number)
+Leave native fuzzy skin disabled and add this to the slicer's post-processing command, replacing the first two paths:
 
--minSupportDistance (use any number)
+```text
+"C:\pathToPython\python.exe" "C:\pathToScript\Fuzzyficator.py" -run 1 -noiseType ridged -noiseScale 1.4 -noiseOctaves 4 -noisePersistence 0.5 -resolution 0.35 -zMin 0 -zMax 0.30 -connectWalls 1 -compensateExtrusion 1 -topSurface 1 -lowerSurface 0 -fuzzySpeed 1500 -seed 42
+```
 
--bridgeCompensationMultiplier(use any number)
+`-fuzzySpeed` is expressed in millimetres per minute, so `1500` equals 25 mm/s.
 
+Unlike the original processor, `-connectWalls 1` is suitable for Hilbert Curve: it no longer zeroes both ends of every short source move.
 
+## Original-compatible preset
 
-Add the script to your slicers postprocessing tab:
+The familiar options remain supported:
 
-`"C:\pathToPython\python.exe" "C:\pathToScript\Fuzzyficator.py"`
+```text
+"C:\pathToPython\python.exe" "C:\pathToScript\Fuzzyficator.py" -run 1 -resolution 0.5 -zMin 0 -zMax 0.3 -connectWalls 1 -compensateExtrusion 1 -topSurface 1 -lowerSurface 0 -fuzzySpeed 1500
+```
 
+If `-resolution`, `-zMax`, or `-run` are omitted, the script now genuinely inherits the corresponding slicer settings. Explicit command-line values take precedence.
 
-The script will use your Fuzzyskin settings if Fuzzyskin is enabled. compensateExtrusion and connectWalls default to ON.
+## Safety and file handling
 
-You can use the settings to override it's defaults by adding them after the script:
+The slicer supplies the input G-code path automatically. By default the script safely replaces that path after processing succeeds.
 
-`"C:\pathToPython\python.exe" "C:\pathToScript\Fuzzyficator.py" -run 1 -zMin 0 -zMax 0.5 -resolution 0.3 -ConnectWalls 1 -compensateExtrusion 1` etc.
+- `--backup` creates `<input>.bak` before replacement.
+- `--output <path>` writes a separate file and leaves the input unchanged.
+- `--force` permits deliberately processing a file that already contains the Fuzzyficator marker.
+- The input must use relative extrusion (`M83`).
 
+## Development and tests
 
+No third-party Python packages are required.
 
-# General settings
+```text
+python -m compileall -q Fuzzyficator.py tests
+python -m unittest discover -s tests -v
+```
 
--resolution sets the size of how to segment the Gcode
-![grafik](https://github.com/user-attachments/assets/ec9a2832-ebee-4b15-a821-e848d71073ec)
+The regression suite covers setting inheritance, extrusion conservation, correct segmentation, height-delta compensation, connected short paths, feed-rate restoration, deterministic Ridged noise, safe `M82` rejection, separate output files, and double-processing protection.
 
--zMin and zMax set the minimal and maximal Z displacement of the segments.
-![grafik](https://github.com/user-attachments/assets/0e9c0c30-0c61-4df0-ae76-dbe2a4c6e381)
+### Preview texture fields without printing
 
--connectWalls sets wether the first segment should not be displaced. 
-![grafik](https://github.com/user-attachments/assets/a2874fcf-e2fa-4440-a6c1-b58d4f6bc080)
+The preview utility writes five dependency-free grayscale PNG height maps. White represents maximum displacement and black represents minimum displacement.
 
--run enables or disables the script
+```text
+python tools/preview_textures.py --output-dir texture-previews --scale 1.4 --seed 42
+```
 
--compensateExtrusion compensates extrusion values for the added distance 
+It generates separate Random, Perlin, Billow, Ridged, and Voronoi images so feature scale and seed choices can be checked before slicing or printing.
 
--fuzzySpeed sets the speed for the fuzzy sections in mm/min
+## Upstream and licence
 
--topSurface enables or disables top surface processing
+Originally created by Roman Tenger / Tenger Technologies. Upstream project: <https://github.com/TengerTechnologies/Fuzzyficator>
 
--lowerSurface enables or disables overhang processing 
+Distributed under the GNU General Public License v3.0; see `LICENSE`.
 
--bridgeCompensationMultiplier is a factor to multiply the extrusion compensation on overhang layers
-
--minSupportDistance sets the minimal distance to the support interface 
-
-
-# Fuzzyficator Paint-On
-
-(experimental) A Gcode postprocessing script to add paint-on "Fuzzyskin" to Prusaslicer Orcaslicer and Bambustudio.
-
-
-
-The Fuzzyficator_paintOn.py works for Bambustudio, Orcaslicer and Prusaslicer. 
-
-Use it at your on risk.
-
-The Fuzzyficator script only runs if fuzzyskin is disabled in the slicer. 
-You have to set some things up in the slicers first. I'm still working on this page so for now check the video linked below. 
-
-You can overite the settings with:
-
--resolution (use any number)
-
--zMin (use any number)
-
--zMax (use any number)
-
--connectWalls (use 1 or 0)
-
--run (use 1 or 0)
-
--compensateExtrusion (use 1 or 0)
-
--topSurface (use 1 or 0)
-
--lowerSurface (use 1 or 0)
-
--fuzzySpeed (use any number)
-
--minSupportDistance (use any number)
-
--bridgeCompensationMultiplier(use any number)
-
-
-For paint-on only:
-
--xy_thickness (use any number)
-
--xy_point_dist (use any number)
-
-
-
-
-
-# Video Guide
-
-
-
-[![Thumnbnail](http://img.youtube.com/vi/cNkHfydnUCI/0.jpg)](http://www.youtube.com/watch?v=cNkHfydnUCI)
-
-
-# Fuzzyficator Pattern
-
-(experimental) A Gcode postprocessing script to add paint-on Displacement maps to Prusaslicer Orcaslicer and Bambustudio.
-
-
-
-The Fuzzyficator_pattern.py works for Bambustudio, Orcaslicer and Prusaslicer. 
-
-Use it at your on risk.
-
-You will need to have a displacement map for it to work.
-You have to set some things up in the slicers first. I'm still working on this page so for now check the video linked below. 
-
-You need to set:
-
--run 1
-
--displacement_map Path\to\displacementMap.png
-
-# Video Guide
-
-# Old standalone version (Do not use anymore)
-
-Only for Prusaslicer. Left in the repo because of the Youtube tutorial. 
-
-You can run it with 4 parameters:
-
-1: float:FuzzyResolution
-
-2: float:z_min_displacement
-
-3: float:z_max_displacement
-
-4: bool:ensure_first_z_zero
-
-FuzzyResolution sets the size of how to segment the Gcode
-![grafik](https://github.com/user-attachments/assets/ec9a2832-ebee-4b15-a821-e848d71073ec)
-
-z_min_displacement and z_max_displacement set the minimal and maximal Z displacement of the segments.
-![grafik](https://github.com/user-attachments/assets/0e9c0c30-0c61-4df0-ae76-dbe2a4c6e381)
-
-ensure_first_z_zero sets wether the first segment should not be displaced
-![grafik](https://github.com/user-attachments/assets/a2874fcf-e2fa-4440-a6c1-b58d4f6bc080)
-
-So to run the script with the following settings: FuzzyResolution: 0.3, z_min_displacement 0, z_max_displacement: 0.5, ensure_first_z_zero: 1
-
-Run: `python fuzzyficator.py 0.3 0 0.5 1` in your console.
-
-The gcode file must be in the same directory and must be named input.gcode
+Development changes are recorded in `CHANGELOG.md`.
