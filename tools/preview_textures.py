@@ -43,6 +43,25 @@ def grayscale_png_bytes(rows: list[bytes]) -> bytes:
     )
 
 
+def rgb_png_bytes(rows: list[bytes]) -> bytes:
+    if not rows or not rows[0]:
+        raise ValueError("Preview rows cannot be empty")
+    if len(rows[0]) % 3:
+        raise ValueError("RGB preview rows must contain three bytes per pixel")
+    width = len(rows[0]) // 3
+    if any(len(row) != width * 3 for row in rows):
+        raise ValueError("Every RGB preview row must have the same width")
+    height = len(rows)
+    raw_scanlines = b"".join(b"\x00" + row for row in rows)
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return (
+        PNG_SIGNATURE
+        + png_chunk(b"IHDR", header)
+        + png_chunk(b"IDAT", zlib.compress(raw_scanlines, level=9))
+        + png_chunk(b"IEND", b"")
+    )
+
+
 def write_grayscale_png(path: os.PathLike[str] | str, rows: list[bytes]) -> None:
     content = grayscale_png_bytes(rows)
     with open(path, "wb") as handle:

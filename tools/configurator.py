@@ -26,6 +26,30 @@ FEATURE_SIZES = (
 
 
 @dataclass(frozen=True)
+class TextureIntensity:
+    name: str
+    height: float
+    speed: float
+    resolution: float
+
+
+INTENSITIES = {
+    "Subtle": TextureIntensity("Subtle", height=0.15, speed=25.0, resolution=0.35),
+    "Standard": TextureIntensity("Standard", height=0.30, speed=25.0, resolution=0.35),
+    "Bold": TextureIntensity("Bold", height=0.40, speed=20.0, resolution=0.30),
+}
+
+
+def match_intensity(height: float, speed: float, resolution: float) -> str:
+    values = (height, speed, resolution)
+    for intensity_name, intensity in INTENSITIES.items():
+        expected = (intensity.height, intensity.speed, intensity.resolution)
+        if all(abs(actual - target) < 1e-9 for actual, target in zip(values, expected)):
+            return intensity_name
+    return "Custom"
+
+
+@dataclass(frozen=True)
 class ConfiguratorSettings:
     texture: str = "ridged"
     size: float = 1.4
@@ -115,14 +139,6 @@ class ConfiguratorSettings:
         if abs(closest.millimetres - self.size) < 1e-9:
             return closest.name
         return f"Custom {self.size:g} mm"
-
-
-PRESETS = {
-    "Subtle": ConfiguratorSettings(texture="perlin", size=1.4, height=0.15),
-    "Ridged": ConfiguratorSettings(texture="ridged", size=1.4, height=0.30),
-    "Stone": ConfiguratorSettings(texture="billow", size=1.4, height=0.25),
-    "Coarse": ConfiguratorSettings(texture="ridged", size=2.8, height=0.30),
-}
 
 
 def preview_choices() -> Iterable[tuple[str, FeatureSize | None]]:

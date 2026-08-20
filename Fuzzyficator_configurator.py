@@ -8,8 +8,15 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 
-from tools.configurator import FEATURE_SIZES, PRESETS, TEXTURE_TYPES, ConfiguratorSettings
-from tools.preview_textures import grayscale_png_bytes, render_texture
+from tools.configurator import (
+    FEATURE_SIZES,
+    INTENSITIES,
+    TEXTURE_TYPES,
+    ConfiguratorSettings,
+    match_intensity,
+)
+from tools.preview_surfaces import render_corner_preview, render_hilbert_surface
+from tools.preview_textures import rgb_png_bytes
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent
@@ -35,10 +42,13 @@ def main() -> int:
     class ConfiguratorApp:
         def __init__(self, root: tk.Tk) -> None:
             self.root = root
-            self.settings = PRESETS["Ridged"]
+            self.settings = ConfiguratorSettings()
             self.preview_images: dict[tuple[str, float], tk.PhotoImage] = {}
             self.preview_buttons: dict[tuple[str, float | None], tk.Button] = {}
-            self.preset_var = tk.StringVar(value="Ridged")
+            self.corner_images: dict[tuple[object, ...], tk.PhotoImage] = {}
+            self.intensity_var = tk.StringVar(value="Standard")
+            self.intensity_note_var = tk.StringVar()
+            self.loading_controls = False
             self.height_var = tk.DoubleVar(value=self.settings.height)
             self.speed_var = tk.DoubleVar(value=self.settings.speed)
             self.top_var = tk.BooleanVar(value=self.settings.top_surface)
@@ -54,7 +64,7 @@ def main() -> int:
             self.advanced_visible = False
 
             root.title("Fuzzyficator Configurator")
-            root.minsize(930, 720)
+            root.minsize(990, 750)
             root.option_add("*Font", ("Segoe UI", 9))
             self._build()
             self._refresh()
@@ -103,22 +113,46 @@ def main() -> int:
 
             ttk.Label(
                 preview_panel,
-                text="Preview key: white = maximum nozzle displacement; black = minimum.",
+                text="Simulated 0.4 mm Hilbert top-surface toolpath. Final sheen varies by filament and lighting.",
                 foreground="#666666",
+                wraplength=500,
             ).grid(row=6, column=0, columnspan=5, sticky="w", pady=(8, 0))
 
-            preset_frame = ttk.LabelFrame(controls, text="Quick preset", padding=10)
-            preset_frame.pack(fill="x", pady=(0, 10))
-            preset_box = ttk.Combobox(
-                preset_frame,
-                textvariable=self.preset_var,
-                values=tuple(PRESETS),
-                state="readonly",
-            )
-            preset_box.pack(fill="x")
-            preset_box.bind("<<ComboboxSelected>>", self._apply_preset)
+            object_frame = ttk.LabelFrame(controls, text="Selected object preview", padding=6)
+            object_frame.pack(fill="x", pady=(0, 10))
+            self.corner_label = ttk.Label(object_frame)
+            self.corner_label.pack(anchor="center")
+            ttk.Label(
+                object_frame,
+                text="Top: selected Hilbert texture    Wall: smooth",
+                foreground="#555555",
+            ).pack(anchor="w", padx=4, pady=(4, 0))
+            ttk.Label(
+                object_frame,
+                text="Fuzzyficator does not currently texture vertical walls.",
+                foreground="#777777",
+            ).pack(anchor="w", padx=4)
 
-            basic = ttk.LabelFrame(controls, text="2  Print controls", padding=10)
+            intensity_frame = ttk.LabelFrame(controls, text="2  Texture intensity", padding=10)
+            intensity_frame.pack(fill="x", pady=(0, 10))
+            intensity_buttons = ttk.Frame(intensity_frame)
+            intensity_buttons.pack(fill="x")
+            for column, intensity_name in enumerate(INTENSITIES):
+                ttk.Radiobutton(
+                    intensity_buttons,
+                    text=intensity_name,
+                    value=intensity_name,
+                    variable=self.intensity_var,
+                    command=self._apply_intensity,
+                ).grid(row=0, column=column, sticky="w", padx=(0, 12))
+            ttk.Label(
+                intensity_frame,
+                textvariable=self.intensity_note_var,
+                foreground="#666666",
+                wraplength=290,
+            ).pack(anchor="w", pady=(6, 0))
+
+            basic = ttk.LabelFrame(controls, text="3  Fine tuning", padding=10)
             basic.pack(fill="x", pady=(0, 10))
             self._spinbox_row(basic, "Texture height", self.height_var, 0.05, 1.0, 0.05, "mm", 0)
             self._spinbox_row(basic, "Texture speed", self.speed_var, 1, 100, 1, "mm/s", 1)
@@ -143,7 +177,7 @@ def main() -> int:
                 row=5, column=0, columnspan=3, sticky="w"
             )
 
-            setup = ttk.LabelFrame(controls, text="3  Slicer checks", padding=10)
+            setup = ttk.LabelFrame(controls, text="4  Slicer checks", padding=10)
             setup.pack(fill="x", pady=(4, 10))
             ttk.Label(setup, text="Top pattern: Hilbert Curve").pack(anchor="w")
             ttk.Label(setup, text="Native fuzzy skin: Disabled").pack(anchor="w")
@@ -153,28 +187,25 @@ def main() -> int:
             ttk.Button(controls, text="Copy Bambu / Orca command", command=self._copy_command).pack(fill="x")
             ttk.Entry(controls, textvariable=self.command_var, state="readonly").pack(fill="x", pady=(6, 0))
 
-            for variable in (
-                self.height_var,
-                self.speed_var,
-                self.resolution_var,
-                self.octaves_var,
-                self.persistence_var,
-                self.seed_var,
-            ):
+            for variable in (self.height_var, self.speed_var, self.resolution_var):
+                variable.trace_add("write", self._on_intensity_control_change)
+            for variable in (self.octaves_var, self.persistence_var, self.seed_var):
                 variable.trace_add("write", self._on_control_change)
+            self._update_intensity_note()
 
         def _preview_button(self, parent: ttk.Frame, texture: str, size: float) -> tk.Button:
             key = (texture, size)
-            rows = render_texture(
+            rows = render_hilbert_surface(
                 texture,
-                size=PREVIEW_PIXELS,
+                output_size=PREVIEW_PIXELS,
                 millimetres=PREVIEW_MILLIMETRES,
+                height=0.30,
                 seed=42,
                 scale=size,
                 octaves=4,
                 persistence=0.5,
             )
-            encoded = base64.b64encode(grayscale_png_bytes(rows))
+            encoded = base64.b64encode(rgb_png_bytes(rows))
             image = tk.PhotoImage(data=encoded)
             self.preview_images[key] = image
             selection_size = None if texture == "random" else size
@@ -218,28 +249,73 @@ def main() -> int:
             if size is not None:
                 changes["size"] = size
             self.settings = replace(self.settings, **changes)
-            self.preset_var.set("")
             self._refresh()
 
-        def _apply_preset(self, _event: object = None) -> None:
-            self.settings = PRESETS[self.preset_var.get()]
-            self._load_variables()
+        def _apply_intensity(self) -> None:
+            intensity = INTENSITIES[self.intensity_var.get()]
+            self.settings = replace(
+                self.settings,
+                height=intensity.height,
+                speed=intensity.speed,
+                resolution=intensity.resolution,
+            )
+            self.loading_controls = True
+            try:
+                self.height_var.set(intensity.height)
+                self.speed_var.set(intensity.speed)
+                self.resolution_var.set(intensity.resolution)
+            finally:
+                self.loading_controls = False
+            self._update_intensity_note()
             self._refresh()
 
         def _load_variables(self) -> None:
-            self.height_var.set(self.settings.height)
-            self.speed_var.set(self.settings.speed)
-            self.top_var.set(self.settings.top_surface)
-            self.lower_var.set(self.settings.lower_surface)
-            self.resolution_var.set(self.settings.resolution)
-            self.octaves_var.set(self.settings.octaves)
-            self.persistence_var.set(self.settings.persistence)
-            self.seed_var.set(self.settings.seed)
-            self.connect_var.set(self.settings.connect_walls)
-            self.compensate_var.set(self.settings.compensate_extrusion)
+            self.loading_controls = True
+            try:
+                self.height_var.set(self.settings.height)
+                self.speed_var.set(self.settings.speed)
+                self.top_var.set(self.settings.top_surface)
+                self.lower_var.set(self.settings.lower_surface)
+                self.resolution_var.set(self.settings.resolution)
+                self.octaves_var.set(self.settings.octaves)
+                self.persistence_var.set(self.settings.persistence)
+                self.seed_var.set(self.settings.seed)
+                self.connect_var.set(self.settings.connect_walls)
+                self.compensate_var.set(self.settings.compensate_extrusion)
+            finally:
+                self.loading_controls = False
 
         def _on_control_change(self, *_args: object) -> None:
+            if self.loading_controls:
+                return
             self.root.after_idle(self._refresh)
+
+        def _on_intensity_control_change(self, *_args: object) -> None:
+            if self.loading_controls:
+                return
+            try:
+                values = (
+                    float(self.height_var.get()),
+                    float(self.speed_var.get()),
+                    float(self.resolution_var.get()),
+                )
+            except (ValueError, tk.TclError):
+                self.intensity_var.set("Custom")
+            else:
+                self.intensity_var.set(match_intensity(*values))
+            self._update_intensity_note()
+            self.root.after_idle(self._refresh)
+
+        def _update_intensity_note(self) -> None:
+            intensity_name = self.intensity_var.get()
+            if intensity_name in INTENSITIES:
+                intensity = INTENSITIES[intensity_name]
+                self.intensity_note_var.set(
+                    f"{intensity.height:g} mm high · {intensity.speed:g} mm/s · "
+                    f"{intensity.resolution:g} mm sampling"
+                )
+            else:
+                self.intensity_note_var.set("Custom values from the fine-tuning controls")
 
         def _read_settings(self) -> ConfiguratorSettings:
             return replace(
@@ -265,6 +341,7 @@ def main() -> int:
                     f"Selected: {self.settings.texture.title()} · {self.settings.size_name} · "
                     f"{self.settings.height:g} mm high · {self.settings.speed:g} mm/s"
                 )
+                self._update_corner_preview()
             except (ValueError, tk.TclError):
                 self.summary_var.set("Enter valid values to generate the command.")
                 self.command_var.set("")
@@ -274,6 +351,30 @@ def main() -> int:
             )
             for key, button in self.preview_buttons.items():
                 button.configure(relief="sunken" if key == selected_key else "raised")
+
+        def _update_corner_preview(self) -> None:
+            preview_scale = 1.4 if self.settings.texture == "random" else self.settings.size
+            key = (
+                self.settings.texture,
+                round(preview_scale, 4),
+                round(self.settings.height, 4),
+                self.settings.seed,
+                self.settings.octaves,
+                round(self.settings.persistence, 4),
+            )
+            image = self.corner_images.get(key)
+            if image is None:
+                rows = render_corner_preview(
+                    self.settings.texture,
+                    texture_height=self.settings.height,
+                    seed=self.settings.seed,
+                    scale=preview_scale,
+                    octaves=self.settings.octaves,
+                    persistence=self.settings.persistence,
+                )
+                image = tk.PhotoImage(data=base64.b64encode(rgb_png_bytes(rows)))
+                self.corner_images[key] = image
+            self.corner_label.configure(image=image)
 
         def _copy_command(self) -> None:
             self._refresh()

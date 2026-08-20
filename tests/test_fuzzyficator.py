@@ -9,7 +9,8 @@ import Fuzzyficator as fuzzy
 import FuzzyficatorApp as fuzzy_app
 import Fuzzyficator_configurator as configurator_app
 from tools import preview_textures
-from tools.configurator import ConfiguratorSettings, FEATURE_SIZES, preview_choices
+from tools import preview_surfaces
+from tools.configurator import ConfiguratorSettings, FEATURE_SIZES, INTENSITIES, match_intensity, preview_choices
 
 
 def make_args(**overrides):
@@ -142,6 +143,17 @@ class ConfigurationTests(unittest.TestCase):
 
         self.assertEqual(choices[0], ("random", None))
         self.assertEqual(len(choices), 1 + 4 * len(FEATURE_SIZES))
+
+    def test_texture_intensities_change_only_postprocessor_strength_values(self):
+        standard = INTENSITIES["Standard"]
+        settings = ConfiguratorSettings()
+
+        self.assertEqual((standard.height, standard.speed, standard.resolution), (0.30, 25.0, 0.35))
+        self.assertEqual(
+            match_intensity(settings.height, settings.speed, settings.resolution),
+            "Standard",
+        )
+        self.assertEqual(match_intensity(0.22, settings.speed, settings.resolution), "Custom")
 
     def test_slicer_settings_are_inherited_when_cli_values_are_omitted(self):
         config = fuzzy.FuzzySkinConfig(make_args())
@@ -421,6 +433,70 @@ class NoiseTests(unittest.TestCase):
                 written = handle.read()
 
         self.assertEqual(encoded, written)
+
+    def test_hilbert_path_visits_every_grid_point_with_orthogonal_steps(self):
+        path = preview_surfaces.hilbert_path(4)
+
+        self.assertEqual(len(path), 16 * 16)
+        self.assertEqual(len(set(path)), len(path))
+        self.assertTrue(
+            all(
+                abs(end[0] - start[0]) + abs(end[1] - start[1]) == 1
+                for start, end in zip(path, path[1:])
+            )
+        )
+
+    def test_hilbert_surface_preview_is_deterministic_rgb(self):
+        first = preview_surfaces.render_hilbert_surface(
+            "voronoi",
+            output_size=32,
+            height=0.3,
+            seed=42,
+            scale=1.4,
+            octaves=4,
+            persistence=0.5,
+            hilbert_order=4,
+        )
+        second = preview_surfaces.render_hilbert_surface(
+            "voronoi",
+            output_size=32,
+            height=0.3,
+            seed=42,
+            scale=1.4,
+            octaves=4,
+            persistence=0.5,
+            hilbert_order=4,
+        )
+
+        self.assertEqual(first, second)
+        self.assertEqual(len(first), 32)
+        self.assertTrue(all(len(row) == 32 * 3 for row in first))
+        self.assertGreater(len(set(first[16])), 12)
+
+    def test_corner_preview_contains_textured_top_and_layered_smooth_wall(self):
+        rows = preview_surfaces.render_corner_preview(
+            "ridged",
+            width=200,
+            height_pixels=130,
+            texture_height=0.3,
+            seed=42,
+            scale=1.4,
+            octaves=4,
+            persistence=0.5,
+        )
+
+        self.assertEqual(len(rows), 130)
+        self.assertTrue(all(len(row) == 200 * 3 for row in rows))
+        self.assertGreater(len(set(rows[50])), 20)
+        self.assertGreater(len(set(rows[105])), 8)
+
+    def test_rgb_preview_encoder_creates_truecolour_png(self):
+        rows = [bytes((255, 0, 0, 0, 255, 0)), bytes((0, 0, 255, 255, 255, 255))]
+        content = preview_textures.rgb_png_bytes(rows)
+
+        self.assertTrue(content.startswith(preview_textures.PNG_SIGNATURE))
+        self.assertIn(b"IHDR", content)
+        self.assertTrue(content.endswith(b"IEND\xaeB`\x82"))
 
 
 if __name__ == "__main__":
